@@ -48,6 +48,7 @@ stl_mesh = mesh.Mesh.from_file(stl_file)
 # open all DCM files in path
 dcm_path = '/mnt/media/work/gradient/ICAD/prostate_samples/cor0001a/t2_ax_0/'
 _, _, filenames = next(walk(dcm_path))
+filenames.sort()
 n_dcm = len(filenames)
 dc = [pydicom.dcmread(dcm_path+f) for f in filenames]
 
@@ -59,11 +60,10 @@ slice_image = np.array([d.pixel_array.astype(np.float32) for d in dc])
 
 slc_i, slc_j = np.meshgrid(np.arange(256), np.arange(256), indexing='ij')
 
-fig = go.Figure()
-
+frames = []
 
 slc_ind = 170
-for slc_ind in range(0, n_dcm, 30):
+for k, slc_ind in enumerate(range(0, n_dcm, 5)):
     X, Y, Z = ij2XYZ(
         slc_i, 
         slc_j, 
@@ -72,14 +72,39 @@ for slc_ind in range(0, n_dcm, 30):
         slice_spacing[slc_ind]
     )
 
-    fig.add_trace(
-            go.Surface(
+    frames.append(
+        go.Frame(
+            data=go.Surface(
                 x=X, 
                 y=Y, 
                 z=Z, 
-                surfacecolor=np.flipud(slice_image[slc_ind])
-            )
+                surfacecolor=np.flipud(slice_image[slc_ind]),
+                showscale=False
+            ),
+            name=str(k)
+        )
     )
+
+fig = go.Figure(frames=frames)
+
+X, Y, Z = ij2XYZ(
+    slc_i, 
+    slc_j, 
+    slice_position[0], 
+    slice_orientation[0], 
+    slice_spacing[0]
+)
+
+# Add data to be displayed before animation starts
+fig.add_trace(go.Surface(
+                x=X, 
+                y=Y, 
+                z=Z, 
+                surfacecolor=np.flipud(slice_image[0]),
+                showscale=False
+    )
+)
+
 
 fig.add_trace(        
         go.Scatter3d(
@@ -90,7 +115,64 @@ fig.add_trace(
         )
 )
 
+def frame_args(duration):
+    return {
+            "frame": {"duration": duration},
+            "mode": "immediate",
+            "fromcurrent": True,
+            "transition": {"duration": duration, "easing": "linear"},
+        }
+
+sliders = [
+            {
+                "pad": {"b": 10, "t": 60},
+                "len": 0.9,
+                "x": 0.1,
+                "y": 0,
+                "steps": [
+                    {
+                        "args": [[f.name], frame_args(0)],
+                        "label": str(k),
+                        "method": "animate",
+                    }
+                    for k, f in enumerate(fig.frames)
+                ],
+            }
+        ]
+
+# Layout
+fig.update_layout(
+         title='Slices in volumetric data',
+         width=1000,
+         height=800,
+         scene=dict(
+                    xaxis=dict(range=[-100, 100], autorange=False),
+                    yaxis=dict(range=[-100, 100], autorange=False),
+                    zaxis=dict(range=[ -80, 150], autorange=False),
+                    aspectratio=dict(x=1, y=1, z=1),
+                    ),
+         updatemenus = [
+            {
+                "buttons": [
+                    {
+                        "args": [None, frame_args(50)],
+                        "label": "&#9654;", # play symbol
+                        "method": "animate",
+                    },
+                    {
+                        "args": [[None], frame_args(0)],
+                        "label": "&#9724;", # pause symbol
+                        "method": "animate",
+                    },
+                ],
+                "direction": "left",
+                "pad": {"r": 10, "t": 70},
+                "type": "buttons",
+                "x": 0.1,
+                "y": 0,
+            }
+         ],
+         sliders=sliders
+)
+
 fig.show()
-
-
-
