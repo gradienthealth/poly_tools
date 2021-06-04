@@ -5,30 +5,32 @@ from os import walk
 from stl import mesh
 import plotly.graph_objects as go
 
-def ij2XYZ(i, j, position, orientation, spacing):
-    #see: https://nipy.org/nibabel/dicom/dicom_orientation.html
+def get_tform(N, position_first, position_last, orientation, spacing):
+    # transformation matrix
+    M = np.array( 
+        [
+            [orientation[0]*spacing[0],     orientation[3]*spacing[1],  (position_last[0] - position_first[0])/(N-1),   position_first[0]],
+            [orientation[1]*spacing[0],     orientation[4]*spacing[1],  (position_last[1] - position_first[1])/(N-1),   position_first[1]],
+            [orientation[2]*spacing[0],     orientation[5]*spacing[1],  (position_last[2] - position_first[2])/(N-1),   position_first[2]],
+            [0,                             0,                          0,                                              1],
+        ]
+    )
+    return M
+
+def ijk2XYZ(i, j, k, M):
+
     initial_shape = i.shape
 
-    # pixel_loc = [j ; i ; 0 ; 1] (already swapped i and j)
+    # pixel_loc = [j ; i ; k ; 1] (already swapped i and j)
     pixel_loc = np.concatenate(
                     [
                         np.reshape(j, [-1,1]), 
                         np.reshape(i, [-1,1]),
-                        np.reshape(j, [-1,1])*0,
-                        np.reshape(j, [-1,1])*0+1,
+                        np.reshape(k, [-1,1]),
+                        np.ones_like(np.reshape(k, [-1,1])),
                     ], 
                     axis=1
     ).T
-
-    # transformation matrix
-    M = np.array( 
-        [
-            [orientation[0]*spacing[0],     orientation[3]*spacing[1],      0,      position[0]],
-            [orientation[1]*spacing[0],     orientation[4]*spacing[1],      0,      position[1]],
-            [orientation[2]*spacing[0],     orientation[5]*spacing[1],      0,      position[2]],
-            [0,                             0,                              0,      1],
-        ]
-    )
 
     # convert back from homogeneous to regular coords
     rcs_coord = np.dot(M, pixel_loc)
@@ -42,11 +44,11 @@ def ij2XYZ(i, j, position, orientation, spacing):
     return X, Y, Z
 
 # open STL file
-stl_file = '/mnt/media/work/gradient/ICAD/prostate_samples/truth/cor0001a/t2_ax_0/cor0001a_t2_ax_0.wp.stl'
+stl_file = '/mnt/media/work/gradient/ICAD/prostate_samples/truth/cor0004a/t2_ax_0/cor0004a_t2_ax_0.cg.stl'
 stl_mesh = mesh.Mesh.from_file(stl_file)
 
 # open all DCM files in path
-dcm_path = '/mnt/media/work/gradient/ICAD/prostate_samples/cor0001a/t2_ax_0/'
+dcm_path = '/mnt/media/work/gradient/ICAD/prostate_samples/cor0004a/t2_ax_0/'
 _, _, filenames = next(walk(dcm_path))
 filenames.sort()
 n_dcm = len(filenames)
@@ -57,29 +59,30 @@ slice_position = np.array([d[0x0020,0x0032].value for d in dc])
 slice_orientation = np.array([d[0x0020,0x0037].value for d in dc])
 slice_spacing = np.array([d[0x0028,0x0030].value for d in dc])
 slice_image = np.array([d.pixel_array.astype(np.float32) for d in dc])
+slice_location = np.array([d[0x0020,0x1041].value for d in dc])
 
-slc_i, slc_j = np.meshgrid(np.arange(256), np.arange(256), indexing='ij')
+M = get_tform(n_dcm, slice_position[0], slice_position[-1], slice_orientation[0], slice_spacing[0])
 
 frames = []
-
 slc_ind = 170
 for k, slc_ind in enumerate(range(0, n_dcm, 5)):
-    X, Y, Z = ij2XYZ(
+    slc_i, slc_j, slc_k = np.meshgrid(np.arange(256), np.arange(256), slc_ind, indexing='ij')
+    X, Y, Z = ijk2XYZ(
         slc_i, 
         slc_j, 
-        slice_position[slc_ind], 
-        slice_orientation[slc_ind], 
-        slice_spacing[slc_ind]
+        slc_k,
+        M
     )
 
     frames.append(
         go.Frame(
             data=go.Surface(
-                x=X, 
-                y=Y, 
-                z=Z, 
-                surfacecolor=np.flipud(slice_image[slc_ind]),
-                showscale=False
+                x=np.squeeze(X),
+                y=np.squeeze(Y), 
+                z=np.squeeze(Z), 
+                surfacecolor=slice_image[slc_ind],
+                opacity=0.75,
+                showscale=False,
             ),
             name=str(k)
         )
@@ -87,31 +90,37 @@ for k, slc_ind in enumerate(range(0, n_dcm, 5)):
 
 fig = go.Figure(frames=frames)
 
-X, Y, Z = ij2XYZ(
+slc_i, slc_j, slc_k = np.meshgrid(np.arange(256), np.arange(256), 0, indexing='ij')
+X, Y, Z = ijk2XYZ(
     slc_i, 
     slc_j, 
-    slice_position[0], 
-    slice_orientation[0], 
-    slice_spacing[0]
+    slc_k,
+    M
 )
 
 # Add data to be displayed before animation starts
 fig.add_trace(go.Surface(
-                x=X, 
-                y=Y, 
-                z=Z, 
-                surfacecolor=np.flipud(slice_image[0]),
+                x=np.squeeze(X), 
+                y=np.squeeze(Y), 
+                z=np.squeeze(Z), 
+                surfacecolor=slice_image[0],
                 showscale=False
     )
 )
 
+
+M = get_tform(n_dcm, slice_position[0], slice_position[-1], slice_orientation[0], slice_spacing[0])
 
 fig.add_trace(        
         go.Scatter3d(
             x=stl_mesh.x.flatten(),
             y=stl_mesh.y.flatten(), 
             z=stl_mesh.z.flatten(),
-            mode='markers'
+            mode='markers',
+            marker=dict(
+                size=1,
+                opacity=0.5
+            )
         )
 )
 
@@ -146,9 +155,9 @@ fig.update_layout(
          width=1000,
          height=800,
          scene=dict(
-                    xaxis=dict(range=[-100, 100], autorange=False),
-                    yaxis=dict(range=[-100, 100], autorange=False),
-                    zaxis=dict(range=[ -80, 150], autorange=False),
+                    xaxis=dict(range=[-200, 200], autorange=False),
+                    yaxis=dict(range=[-200, 200], autorange=False),
+                    zaxis=dict(range=[-200, 200], autorange=False),
                     aspectratio=dict(x=1, y=1, z=1),
                     ),
          updatemenus = [
